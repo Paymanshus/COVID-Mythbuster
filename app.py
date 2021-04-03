@@ -1,34 +1,25 @@
 import os
 from flask import Flask, request, render_template
 import requests
-
-from keras.models import load_model
+import pickle as pk
+from bs4 import BeautifulSoup
 
 from preprocessing import preprocess_text
 
-from twilio.twiml.messaging_response import MessagingResponse
-from twilio.rest import Client
+from rake_nltk import Rake
+from googlesearch import search
+import urllib.request as urllib
+from urllib.request import urlopen
 
-
-# Your Account Sid and Auth Token from twilio.com/console
-# and set the environment variables. See http://twil.io/secure
-account_sid = os.environ['TWILIO_ACCOUNT_SID']
-auth_token = os.environ['TWILIO_AUTH_TOKEN']
-client = Client(account_sid, auth_token)
 
 codePath = os.path.dirname(os.path.abspath('preprocessing.py'))
-tokens = os.path.join(codePath, 'Models/90HighBias1D.h5')
-model = load_model(tokens)
+pipe = os.path.join(codePath, 'Models/100lenPipelineLem.pk')
+pipeline = pk.load(open(pipe, 'rb'))
 
-hello_flag = 0
+# TODO: Fix js files not working
+app = Flask(__name__, template_folder='templates')
 
-app = Flask(__name__)
-
-
-def set_global_flag(value=1):
-    global hello_flag
-    hello_flag = 1
-
+# app.config['EXPLAIN_TEMPLATE_LOADING'] = True
 
 # @app.before_request
 # def init_global_flag():
@@ -54,81 +45,68 @@ def home():
     #     responded = True
 
 
-# -----------------------------------
-# Bot Command Reciever And Processor
-# -----------------------------------
-@app.route('/bot', methods=['POST'])
-def bot():
-    incoming_msg = request.values.get('Body', '').lower()
-    resp = MessagingResponse()
-    msg = resp.message()
-    responded = False
-
-    hello_list = ['hello', 'hey', 'start', 'hi']
-    global hello_flag
-
-    # --------------------------
-    # First Time Welcome Message
-    # --------------------------
-    if any(hello in incoming_msg for hello in hello_list) and hello_flag == 0:
-        set_global_flag(value=1)
-
-        hello_message = """_Hi, 
-        I am *COVID19 Mythbuster*_ 👋🏻
-
-        ◻️ _In these crazy hyperconnected times, there is a lot of FAKE NEWS spreading about the NOVEL CORONAVIRUS._
-
-        ◻️ _I Can Help You In Differentiating the Fake News From The Real News_ 📰
-
-        ◻️ _All you need to do is send me the news you get to verify if it Real or not._ 
-
-        _It's that simple 😃
-        Try it for yourself, simply send me a News About COVID19 and I'll try to tell if it is Fake Or Real_ ✌🏻✅
-        """
-
-        msg.body(hello_message)
-        responded = True
-
-    else:
-        text = preprocess_text(incoming_msg)
-        pred = model.predict(text)[0][0]
-
-        output = ''
-
-        if pred > 0.5:
-            output = "The given news is real"
-            responded = True
-        elif pred < 0.5:
-            output = "The given news is fake"
-            responded = True
-
-        msg.body(output)
-
-    if not responded:
-        msg.body(
-            """That didn't quite work! Try some other text, or send a
-            Hello to get started if you haven't already""")
-
-    return str(resp)
-
-
-# -----------------------------------
-# Reciever And Processor Test Function
-# -----------------------------------
+# --------------------------------------
+# Reciever And Processor Output Function
+# --------------------------------------
 @app.route('/', methods=['POST'])
-def test():
-    input_text = request.form["tweet"]
-    input_button = request.form["button"]
+def output():
 
-    print(input_text)
-    print(input_button)
+    input_text = request.form["news"]
+    # input_button = request.form["button"]
 
     text = preprocess_text(input_text)
-    pred = model.predict(text)
+    pred = pipeline.predict([text])
 
-    return render_template("index.html", pred=str(pred))
+    output = ''
+    if pred > 0.5:
+        output = "The Given News is Real. ✅"
+    elif pred < 0.5:
+        output = "The Given News is Fake. ❌"
+        # TODO: Add fact checker, create table or use the clickable div thingy in template
+        sent = input_text.split('.')
+        r = Rake()
+        r.extract_keywords_from_sentences(sent)
+        put_links = True
+        query = ' '.join(r.get_ranked_phrases()[:3])
+
+        hdr = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.11 (KHTML, like Gecko) Chrome/23.0.1271.64 Safari/537.11',
+               'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+               'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.3',
+               'Accept-Encoding': 'none',
+               'Accept-Language': 'en-US,en;q=0.8',
+               'Connection': 'keep-alive'}
+
+        links, headings = [], []
+        articles = {}
+
+        if query:
+            for i in search(query, country='india', lang='en', num=3, start=0, stop=3):
+                links.append(i)
+
+            for i in links:
+                url = urllib.Request(i, headers=hdr)
+                soup = BeautifulSoup(urllib.urlopen(url))
+
+                headings.append(soup.title.get_text())
+                articles[i] = soup.title.get_text()
+
+        else:
+            return render_template("index.html", pred=(output), scroll="scrollable")
+
+        if links:
+            print(links)
+        print(headings)
+        print(articles)
+
+        return render_template("index.html", pred=(output), scroll="scrollable", articles=articles)
+
+    return render_template("index.html", pred=(output), scroll="scrollable")
+
+
+@app.route('/explore')
+def explore():
+    return render_template("project.html")
 
 
 if __name__ == '__main__':
-    hello_flag = 0
     app.run(debug=True)
